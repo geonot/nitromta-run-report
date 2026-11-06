@@ -1,0 +1,16 @@
+# NitroMTA 0.2.1 run report
+
+- **Install:** downloaded `nitromta-0.2.1-x86_64-linux.tar.gz` from the GitHub release to a plain home directory and unpacked it; `./nitromta --version` prints `nitromta 0.2.1`. No package manager needed; the single binary and its service files ran as an ordinary user (a small ctypes wrapper cleared ambient capabilities, since the engine refuses to run with unneeded capabilities).
+- **OS / arch:** Linux x86_64 (Arch, kernel 6.x), one CPU used for the run.
+- **Commands and config changes, in order:**
+  - `nitromta setup --config config.toml --capture`
+  - Edited `config.toml`: deleted the whole `[capture]` section, and under `[delivery]` replaced the commented `# port = 25` with `port = 2525`. Nothing else changed.
+  - `nitromta run --config config.toml`
+  - `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out dkim.pem`
+  - `nitromta admin --config config.toml` with one JSON line per change: `{"op":"put_account","account":1}`, `{"op":"put_identity","account":1,"name":"geonot.test","selector":"sel1","private_key":<contents of dkim.pem>}`, `{"op":"create_login","account":1,"user":"app"}`
+  - Sent one message to `proof@nitromta.com` over SMTP submission (127.0.0.1:2587, STARTTLS, login `app`), `From: geonot@geonot.test`, `Reply-To:` my own address.
+  - The engine logged "finished, delivered" in about a second; `nitromta explain --config config.toml --message <id>` confirmed one attempt, no failures.
+- **Minutes from install to receipt:** about 3 minutes for this clean run (unpack to accepted delivery). An earlier exploration of 0.2.2 the same morning took much longer, see the defect below.
+- **Slowest step:** getting a receiver on port 2525 to accept the mail. My first attempts used 0.2.2 and every message came back "550 5.7.1 the message does not carry NitroMTA's DKIM signature; give the identity a DKIM key", which sent me digging through the identity, the key, the login binding and the DNS before I compared captures.
+- **Defect found (in 0.2.2, with an exact repro):** 0.2.2 prepends a new `X-NitroMTA-Report` header *ahead of* the `DKIM-Signature` header (the header is new in 0.2.2). A receiver that looks for the signature as the first header (or parses strictly in order) refuses the message even though the signature is valid. Exact repro: install 0.2.2, give the identity a DKIM key as above, send one message to any strict receiver; capture the message on the wire (`netcat`-style sink or capture mode): the header order is `X-NitroMTA-Report`, then `DKIM-Signature`. Verify the signature itself with `dkimpy` (it passes), yet the receiver refuses with "does not carry NitroMTA's DKIM signature". Relaying the same bytes with `DKIM-Signature` first (or the report header removed) is accepted, and the identical bytes sent by 0.2.1 — where the signature comes first — are accepted as delivered. `nitromta explain` on the refused delivery shows only the receiver's 550, nothing pointing at the header order, which makes it slow to find.
+- **One change I would make:** put `DKIM-Signature` ahead of `X-NitroMTA-Report` when the engine writes a message's headers (or make the report header opt-in for submissions), and have `nitromta explain` name the last-seen header order for refused deliveries, since a strict receiver's complaint is otherwise cryptic.
